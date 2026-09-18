@@ -1,0 +1,8 @@
+namespace counter;
+
+table Response {
+  id:ulong;
+  data:ulong;
+}
+
+root_type Response;

@@ -1,0 +1,7 @@
+namespace counter;
+
+table Request {
+  id:ulong;
+}
+
+root_type Request;
