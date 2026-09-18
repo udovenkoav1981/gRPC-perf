@@ -22,7 +22,6 @@ import (
 
 type clientState struct {
 	id        atomic.Uint64
-	sent      atomic.Uint64
 	responses atomic.Uint64
 }
 
@@ -96,10 +95,10 @@ func (c *clientState) run(client pb.CounterClient) error {
 func (c *clientState) sendRequests(stream pb.Counter_ExchangeClient) error {
 	for {
 		id := c.id.Add(1)
+		// SendMsg may retain the message after returning; do not mutate or reuse it.
 		if err := stream.SendMsg(&pb.Request{Id: id}); err != nil {
 			return err
 		}
-		c.sent.Add(1)
 	}
 }
 
@@ -135,7 +134,7 @@ func (c *clientState) reportRPS() {
 	var lastSent, lastResponses uint64
 	for range ticker.C {
 		now := time.Now()
-		sent := c.sent.Load()
+		sent := c.id.Load()
 		responses := c.responses.Load()
 		seconds := now.Sub(lastTime).Seconds()
 		fmt.Printf("sent/s=%.0f responses/s=%.0f total_responses=%d\n",
