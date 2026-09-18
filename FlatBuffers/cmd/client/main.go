@@ -8,6 +8,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"runtime"
 	"strconv"
@@ -34,7 +36,12 @@ const (
 )
 
 func main() {
+	pprofListen := flag.String("pprof-listen", "", "serve net/http/pprof at this address, for example 127.0.0.1:6060")
+	pprofMemRate := flag.Int("pprof-mem-rate", 16<<10, "allocation sampling interval in bytes when pprof is enabled")
 	flag.Parse()
+	if *pprofMemRate <= 0 {
+		log.Fatal("-pprof-mem-rate must be positive")
+	}
 	if flag.NArg() != 2 {
 		log.Fatalf("usage: %s <server-address> <port>", os.Args[0])
 	}
@@ -43,10 +50,27 @@ func main() {
 		log.Fatal("port must be a number from 1 to 65535")
 	}
 	address := net.JoinHostPort(flag.Arg(0), strconv.Itoa(port))
+	if *pprofListen != "" {
+		runtime.MemProfileRate = *pprofMemRate
+		listener, err := net.Listen("tcp", *pprofListen)
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("pprof listening on http://%s/debug/pprof/", listener.Addr())
+		go func() {
+			if err := http.Serve(listener, nil); err != nil {
+				log.Fatal(err)
+			}
+		}()
+	}
 	var state clientState
 	go state.reportRPS()
+	state.runForever(address)
+}
+
+func (c *clientState) runForever(address string) {
 	for {
-		if err := state.run(address); err != nil {
+		if err := c.run(address); err != nil {
 			log.Printf("%s: %v; reconnecting in 1s", address, err)
 			time.Sleep(time.Second)
 		}
