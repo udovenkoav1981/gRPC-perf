@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"flag"
 	"fmt"
@@ -8,7 +9,9 @@ import (
 	"log"
 	"net"
 	"os"
+	"runtime"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -20,6 +23,15 @@ type clientState struct {
 	id        atomic.Uint64
 	responses atomic.Uint64
 }
+
+type serializedRequest struct {
+	frame []byte
+}
+
+const (
+	requestQueueSize = 4096
+	minBatchSize     = 1000
+)
 
 func main() {
 	flag.Parse()
@@ -62,16 +74,77 @@ func (c *clientState) run(address string) error {
 }
 
 func (c *clientState) writeRequests(writer io.Writer) error {
-	builder := flatbuffers.NewBuilder(128)
-	out := make([]byte, 0, wire.BufferSize+64)
+	requests := make(chan *serializedRequest, requestQueueSize)
+	pool := &sync.Pool{New: func() any {
+		return &serializedRequest{frame: make([]byte, 0, 128)}
+	}}
+	stop := make(chan struct{})
+	producerDone := make(chan struct{})
+	go func() {
+		defer close(producerDone)
+		builder := flatbuffers.NewBuilder(128)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			request := pool.Get().(*serializedRequest)
+			request.frame = wire.AppendRequest(request.frame[:0], builder, c.id.Add(1))
+			select {
+			case requests <- request:
+			case <-stop:
+				pool.Put(request)
+				return
+			}
+		}
+	}()
+	err := writeQueuedRequests(writer, requests, pool)
+	close(stop)
+	<-producerDone
+	return err
+}
+
+func writeQueuedRequests(writer io.Writer, requests <-chan *serializedRequest, pool *sync.Pool) error {
+	buffer := bufio.NewWriterSize(writer, wire.BufferSize)
 	for {
-		for len(out) < wire.BufferSize {
-			out = wire.AppendRequest(out, builder, c.id.Add(1))
+		request, ok := <-requests
+		if !ok {
+			return nil
 		}
-		if err := wire.WriteAll(writer, out); err != nil {
-			return err
+		yielded := false
+		for {
+			_, err := buffer.Write(request.frame)
+			request.frame = request.frame[:0]
+			pool.Put(request)
+			if err != nil {
+				return err
+			}
+			select {
+			case request, ok = <-requests:
+				if !ok {
+					return buffer.Flush()
+				}
+				continue
+			default:
+			}
+			if !yielded && buffer.Buffered() < minBatchSize {
+				runtime.Gosched()
+				yielded = true
+				select {
+				case request, ok = <-requests:
+					if !ok {
+						return buffer.Flush()
+					}
+					continue
+				default:
+				}
+			}
+			if err := buffer.Flush(); err != nil {
+				return err
+			}
+			break
 		}
-		out = out[:0]
 	}
 }
 
