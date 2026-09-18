@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package counter;
+
+option go_package = "grpc-perf/grpc/proto;proto";
+
+message Request {
+  uint64 id = 1;
+}
+
+message Response {
+  uint64 id = 1;
+  uint64 data = 2;
+}
+
+service Counter {
+  rpc Exchange(stream Request) returns (stream Response);
+}
